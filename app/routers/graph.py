@@ -15,7 +15,7 @@ router = APIRouter()
 
 @router.post("/vendor-risk", response_model=VendorRiskResponse)
 def vendor_risk(req: VendorRiskRequest) -> VendorRiskResponse:
-    """Analyse vendor/supplier risk profile."""
+    """Analyze vendor/supplier risk profile."""
     data = queries.get_vendor_risk(req.vendor, req.tenant_id)
     if not data:
         return VendorRiskResponse(vendor=req.vendor, summary="Vendor not found.")
