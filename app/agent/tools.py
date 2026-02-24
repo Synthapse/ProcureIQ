@@ -1,6 +1,8 @@
 from langchain_core.tools import tool
+from app.config import settings
 from app.graph import queries
 from app.agent.rag import query_knowledge_base
+from app.agent.do_agent import query_do_agent
 
 
 @tool
@@ -136,6 +138,17 @@ def supplier_concentration_analysis() -> str:
     return "Supplier concentration risk:\n" + "\n".join(lines) if lines else "No concentration risk data."
 
 
+@tool
+def ask_digitalocean_agent(question: str) -> str:
+    """Ask the DigitalOcean hosted agent (with connected Knowledge Base) about documents, clauses, or policies.
+    Use when the user asks about contract wording, clause content, or document-level details that come from the knowledge base."""
+    if not settings.do_agent_url or not settings.do_agent_access_key:
+        return (
+            "DigitalOcean agent is not configured. Set DO_AGENT_URL and DO_AGENT_ACCESS_KEY in .env."
+        )
+    return query_do_agent(question)
+
+
 TOOLS = [
     vendor_risk_analysis,
     renewal_impact_analysis,
@@ -144,5 +157,6 @@ TOOLS = [
     knowledge_base_search,
     obligation_status_check,
     supplier_concentration_analysis,
+    ask_digitalocean_agent,
 ]
 

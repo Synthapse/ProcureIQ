@@ -1,4 +1,57 @@
+import uuid
+
 from app.graph.client import neo4j_client
+
+
+def save_conversation_turn(
+    user_id: str,
+    question: str,
+    answer: str,
+    tool_calls: list[str] | None = None,
+    conversation_id: str | None = None,
+) -> str:
+    """Persist one chat turn in Neo4j. Returns the conversation id (existing or new).
+
+    If conversation_id is set and belongs to this user, appends to that conversation.
+    Otherwise creates a new Conversation. Graph: (User)-[:HAS_CONVERSATION]->(Conversation)-[:HAS_MESSAGE]->(Message).
+    """
+    msg_user_id = str(uuid.uuid4())
+    msg_assistant_id = str(uuid.uuid4())
+    tool_calls_str = ",".join(tool_calls) if tool_calls else None
+    params = {
+        "user_id": user_id,
+        "msg_user_id": msg_user_id,
+        "msg_assistant_id": msg_assistant_id,
+        "question": question,
+        "answer": answer,
+        "tool_calls": tool_calls_str,
+    }
+    if conversation_id:
+        append_cypher = """
+            MATCH (u:User {id: $user_id})-[:HAS_CONVERSATION]->(c:Conversation {id: $conversation_id})
+            CREATE (m1:Message {id: $msg_user_id, role: 'user', content: $question, created_at: datetime()})
+            CREATE (m2:Message {id: $msg_assistant_id, role: 'assistant', content: $answer, created_at: datetime(), tool_calls: $tool_calls})
+            CREATE (c)-[:HAS_MESSAGE]->(m1)
+            CREATE (c)-[:HAS_MESSAGE]->(m2)
+            RETURN c.id AS conv_id
+        """
+        params["conversation_id"] = conversation_id
+        rows = neo4j_client.run_query(append_cypher, params)
+        if rows:
+            return rows[0]["conv_id"]
+    conv_id = str(uuid.uuid4())
+    params["conv_id"] = conv_id
+    create_cypher = """
+        MERGE (u:User {id: $user_id})
+        CREATE (c:Conversation {id: $conv_id, created_at: datetime()})
+        CREATE (m1:Message {id: $msg_user_id, role: 'user', content: $question, created_at: datetime()})
+        CREATE (m2:Message {id: $msg_assistant_id, role: 'assistant', content: $answer, created_at: datetime(), tool_calls: $tool_calls})
+        MERGE (u)-[:HAS_CONVERSATION]->(c)
+        CREATE (c)-[:HAS_MESSAGE]->(m1)
+        CREATE (c)-[:HAS_MESSAGE]->(m2)
+    """
+    neo4j_client.run_query(create_cypher, params)
+    return conv_id
 
 
 def get_vendor_risk(vendor_name: str, tenant_id: str | None = None) -> dict:

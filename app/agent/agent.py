@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import AsyncGenerator
 
 from langchain_openai import ChatOpenAI
@@ -10,35 +11,58 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from app.config import settings
 from app.agent.tools import TOOLS
 
-SYSTEM_PROMPT = """You are ProcureIQ, an AI-powered procurement intelligence assistant.
-You help procurement managers, legal teams, and finance leaders understand vendor risk,
-contract exposure, and renewal impact.
+logger = logging.getLogger(__name__)
 
-You have access to:
-- A live Neo4j procurement graph (vendor/contract/obligation relationships)
-- A document knowledge base with contracts, policies, and clause libraries (RAG)
+# Agent instructions: role, tools, and behaviour (used as system prompt).
+AGENT_INSTRUCTIONS = """You are ProcureIQ, an AI-powered procurement intelligence assistant. You help procurement managers, legal teams, and finance leaders understand vendor risk, contract exposure, and renewal impact.
 
-Decision rules:
-- For questions about specific vendors, contracts, or obligations → use graph tools
-- For questions about clause content, policy text, or document details → use knowledge_base_search
-- For risk rankings or expiry timelines → combine both if needed
+## Your data sources
+- **Graph (Neo4j):** Live vendor–contract–obligation relationships, risk scores, expiry dates, values.
+- **Knowledge base:** Contract text, policies, clause libraries. Use ask_digitalocean_agent (hosted agent with connected KB) or knowledge_base_search (API) for clause/content questions.
 
-Always use at least one tool before answering. When you have the data, provide:
-1. A clear, concise summary
-2. Key findings and risks
-3. Recommended actions
+## When to use which tool
+- **vendor_risk_analysis(vendor_name)** — Specific vendor’s risk, contracts, obligations.
+- **renewal_impact_analysis(days_ahead)** — Contracts expiring soon, renewal risk (default 90 days).
+- **contract_dependency_lookup(contract_id)** — One contract’s lines, obligations, invoices.
+- **top_risk_suppliers(limit)** — Which vendors have the highest risk (default 5).
+- **obligation_status_check(status)** — Overdue, pending, or completed obligations.
+- **supplier_concentration_analysis()** — Vendors with many contracts; concentration / blast-radius risk.
+- **ask_digitalocean_agent(question)** — Document/clause/policy questions (hosted agent + Knowledge Base).
+- **knowledge_base_search(query)** — Alternative RAG search if not using the DO agent.
 
-Be professional, data-driven, and explainable. Cite specific values (risk scores, dates, amounts).
-If you cannot find data, say so clearly."""
+Use at least one tool before answering. For graph data use Neo4j tools; for document/clause content use ask_digitalocean_agent or knowledge_base_search. Combine tools when the question needs both (e.g. top_risk_suppliers + ask_digitalocean_agent).
+
+## How to respond
+1. **Summary** — One or two sentences answering the question.
+2. **Findings** — Key data: risk scores, dates, amounts, contract/vendor names. Cite specific values.
+3. **Recommendations** — Short, actionable next steps where relevant.
+
+Be professional, data-driven, and explainable. If no data is found, say so clearly and suggest what the user could try instead."""
+
+SYSTEM_PROMPT = AGENT_INSTRUCTIONS
 
 
 def build_agent() -> AgentExecutor:
-    llm = ChatOpenAI(
-        model=settings.do_gradient_model,
-        openai_api_key=settings.do_gradient_api_key,
-        openai_api_base=settings.do_gradient_base_url,
-        temperature=0,
-    )
+    if settings.openai_api_key:
+        llm = ChatOpenAI(
+            model=settings.openai_model,
+            openai_api_key=settings.openai_api_key,
+            temperature=0,
+        )
+    elif settings.do_inference_access_key:
+        llm = ChatOpenAI(
+            model=settings.do_inference_model,
+            openai_api_key=settings.do_inference_access_key,
+            openai_api_base=settings.do_inference_base_url,
+            temperature=0,
+        )
+    else:
+        llm = ChatOpenAI(
+            model=settings.do_gradient_model,
+            openai_api_key=settings.do_gradient_api_key,
+            openai_api_base=settings.do_gradient_base_url,
+            temperature=0,
+        )
 
     prompt = ChatPromptTemplate.from_messages(
         [
@@ -83,6 +107,7 @@ async def stream_agent_response(question: str) -> AsyncGenerator[str, None]:
         {"type": "done",  "answer": "<text>",      "tool_calls": ["<name>", ...]}
         {"type": "error", "message": "<text>"}
     """
+    logger.info("LLM flow input (question): %s", question)
     agent = get_agent()
     tool_calls: list[str] = []
 
@@ -94,6 +119,8 @@ async def stream_agent_response(question: str) -> AsyncGenerator[str, None]:
 
             if kind == "on_tool_start":
                 tool = event.get("name", "unknown")
+                tool_input = event.get("data", {}).get("input", {})
+                logger.info("Tool call: %s (input: %s)", tool, tool_input)
                 if tool not in tool_calls:
                     tool_calls.append(tool)
                 yield _sse(
@@ -117,8 +144,10 @@ async def stream_agent_response(question: str) -> AsyncGenerator[str, None]:
             elif kind == "on_chain_end" and event.get("name") == "AgentExecutor":
                 raw = event.get("data", {}).get("output", {})
                 answer = raw.get("output", "") if isinstance(raw, dict) else str(raw)
+                logger.info("Agent done, tool_calls=%s", tool_calls)
                 yield _sse({"type": "done", "answer": answer, "tool_calls": tool_calls})
 
     except Exception as exc:
+        logger.exception("Agent stream error")
         yield _sse({"type": "error", "message": str(exc)})
 

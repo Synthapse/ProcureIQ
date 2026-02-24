@@ -55,6 +55,8 @@ POST /api/v1/chat/
 ```json
 {
   "question": "Which vendors create the highest termination risk next quarter?",
+  "user_id": "user-001",
+  "conversation_id": "uuid-of-current-thread",
   "tenant_id": "tenant-001"
 }
 ```
@@ -62,6 +64,8 @@ POST /api/v1/chat/
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `question` | `string` | ✅ | Natural language procurement question |
+| `user_id` | `string` | ✅ | User identifier (conversations are stored per user in Neo4j) |
+| `conversation_id` | `string` | ❌ | Omit for a new thread; send to append this turn to the same conversation |
 | `tenant_id` | `string` | ❌ | Optional tenant scope (for multi-tenant deployments) |
 
 ---
@@ -108,6 +112,7 @@ Emitted throughout agent execution to communicate the current backend phase.
 | `knowledge_base_search` | Searches contract/policy document knowledge base (RAG) |
 | `obligation_status_check` | Lists overdue / pending / completed obligations |
 | `supplier_concentration_analysis` | Detects vendor concentration and blast-radius risk |
+| `ask_digitalocean_agent` | Queries DigitalOcean hosted agent with connected Knowledge Base |
 
 ---
 
@@ -117,8 +122,9 @@ Emitted throughout agent execution to communicate the current backend phase.
 // type === "done"
 {
   type: "done",
-  answer: string,       // full markdown-formatted answer text
-  tool_calls: string[]  // ordered list of tools that were called
+  answer: string,           // full markdown-formatted answer text
+  tool_calls: string[],     // ordered list of tools that were called
+  conversation_id: string   // send this on the next request to continue the same thread
 }
 ```
 
@@ -337,7 +343,8 @@ export type ToolName =
   | "top_risk_suppliers"
   | "knowledge_base_search"
   | "obligation_status_check"
-  | "supplier_concentration_analysis";
+  | "supplier_concentration_analysis"
+  | "ask_digitalocean_agent";
 
 export interface PhaseEvent {
   type: "phase";
@@ -350,6 +357,7 @@ export interface DoneEvent {
   type: "done";
   answer: string;
   tool_calls: ToolName[];
+  conversation_id: string;  // use in next request to keep thread
 }
 
 export interface ErrorEvent {
@@ -362,6 +370,8 @@ export type StreamEvent = PhaseEvent | DoneEvent | ErrorEvent;
 // Request body
 export interface ChatRequest {
   question: string;
+  user_id: string;
+  conversation_id?: string;  // omit for new thread; send to continue same conversation
   tenant_id?: string;
 }
 
@@ -416,7 +426,9 @@ export function useProcureChat() {
   const [status, setStatus] = useState<ChatStatus>("idle");
   const abortRef = useRef<AbortController | null>(null);
 
-  const sendQuestion = useCallback(async (question: string, tenantId?: string) => {
+  const [conversationId, setConversationId] = useState<string | null>(null);
+
+  const sendQuestion = useCallback(async (question: string, userId: string, tenantId?: string) => {
     // Cancel any in-flight request
     abortRef.current?.abort();
     const abort = new AbortController();
@@ -429,7 +441,12 @@ export function useProcureChat() {
     setMessages((prev) => [...prev, userMsg, assistantMsg]);
     setStatus("streaming");
 
-    const body: ChatRequest = { question, ...(tenantId ? { tenant_id: tenantId } : {}) };
+    const body: ChatRequest = {
+      question,
+      user_id: userId,
+      ...(conversationId ? { conversation_id: conversationId } : {}),
+      ...(tenantId ? { tenant_id: tenantId } : {}),
+    };
 
     try {
       const response = await fetch(API_URL, {
@@ -503,6 +520,7 @@ export function useProcureChat() {
 
     if (event.type === "done") {
       const done = event as DoneEvent;
+      if (done.conversation_id) setConversationId(done.conversation_id);
       setMessages((prev) =>
         prev.map((m) =>
           m.id === assistantId
@@ -549,6 +567,7 @@ const TOOL_LABELS: Record<ToolName, string> = {
   knowledge_base_search:        "Knowledge Base (RAG)",
   obligation_status_check:      "Obligation Status",
   supplier_concentration_analysis: "Concentration Risk",
+  ask_digitalocean_agent:       "DO Agent (KB)",
 };
 
 const PHASE_LABELS: Record<string, string> = {
@@ -596,6 +615,7 @@ Use these human-readable labels anywhere the raw tool name would be shown to end
 | `knowledge_base_search` | Knowledge Base | 📄 |
 | `obligation_status_check` | Obligation Status | ✅ |
 | `supplier_concentration_analysis` | Concentration Risk | 🕸️ |
+| `ask_digitalocean_agent` | DO Agent (KB) | 🤖 |
 
 ---
 

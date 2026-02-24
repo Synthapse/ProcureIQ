@@ -6,6 +6,8 @@ from pydantic import BaseModel
 
 class ChatRequest(BaseModel):
     question: str
+    user_id: str
+    conversation_id: Optional[str] = None  # omit for new thread; send to continue same conversation
     tenant_id: Optional[str] = None
 
 
@@ -26,6 +28,7 @@ class StreamEvent(BaseModel):
     * ``"done"`` – final answer is ready.
       ``answer`` contains the full response text.
       ``tool_calls`` lists the names of all tools that were invoked.
+      ``conversation_id`` is the conversation id (send on next request to continue thread).
     * ``"error"`` – an unrecoverable error occurred; ``message`` has details.
     """
 
@@ -35,4 +38,5 @@ class StreamEvent(BaseModel):
     message: Optional[str] = None
     answer: Optional[str] = None
     tool_calls: Optional[list[str]] = None
+    conversation_id: Optional[str] = None
 
