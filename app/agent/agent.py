@@ -22,6 +22,9 @@ AGENT_INSTRUCTIONS = """You are ProcureIQ, an AI-powered procurement intelligenc
 
 ## When to use which tool
 - **vendor_risk_analysis(vendor_name)** — Specific vendor’s risk, contracts, obligations.
+- **list_all_suppliers(tenant_id?, limit?)** — Full list of suppliers/vendors.
+- **list_all_contracts(tenant_id?, limit?)** — Full list of contracts.
+- **list_all_invoices(tenant_id?, limit?)** — Full list of invoices.
 - **renewal_impact_analysis(days_ahead)** — Contracts expiring soon, renewal risk (default 90 days).
 - **contract_dependency_lookup(contract_id)** — One contract’s lines, obligations, invoices.
 - **top_risk_suppliers(limit)** — Which vendors have the highest risk (default 5).
@@ -29,8 +32,9 @@ AGENT_INSTRUCTIONS = """You are ProcureIQ, an AI-powered procurement intelligenc
 - **supplier_concentration_analysis()** — Vendors with many contracts; concentration / blast-radius risk.
 - **ask_digitalocean_agent(question)** — Document/clause/policy questions (hosted agent + Knowledge Base).
 - **knowledge_base_search(query)** — Alternative RAG search if not using the DO agent.
+- **Hybrid tools** (graph + knowledge base in one call): suppliers_with_knowledge_base(question, limit?), contracts_with_knowledge_base(question, limit?), invoices_with_knowledge_base(question, limit?), vendor_risk_with_knowledge_base(vendor_name, question), renewal_impact_with_knowledge_base(question, days_ahead?), contract_dependency_with_knowledge_base(contract_id, question), top_risk_suppliers_with_knowledge_base(question, limit?), obligation_status_with_knowledge_base(question, status?), supplier_concentration_with_knowledge_base(question). Use when the user wants graph data (suppliers, contracts, invoices, risk, renewals, obligations, concentration) combined with policies, clauses, or document content in a single answer.
 
-Use at least one tool before answering. For graph data use Neo4j tools; for document/clause content use ask_digitalocean_agent or knowledge_base_search. Combine tools when the question needs both (e.g. top_risk_suppliers + ask_digitalocean_agent).
+Use at least one tool before answering. For questions that need both graph data and policy/clause content, prefer the matching hybrid tool (e.g. suppliers_with_knowledge_base, contracts_with_knowledge_base, vendor_risk_with_knowledge_base). Otherwise use graph-only or KB-only tools.
 
 ## How to respond
 1. **Summary** — One or two sentences answering the question.
@@ -93,6 +97,28 @@ def _sse(payload: dict) -> str:
     return f"data: {json.dumps(payload)}\n\n"
 
 
+def _data_sources_from_tool_calls(tool_calls: list[str]) -> list[str]:
+    """Derive data_sources list from tool names for metadata."""
+    graph_tools = {
+        "list_all_suppliers", "list_all_contracts", "list_all_invoices",
+        "vendor_risk_analysis", "renewal_impact_analysis", "contract_dependency_lookup",
+        "top_risk_suppliers", "obligation_status_check", "supplier_concentration_analysis",
+    }
+    kb_tools = {"knowledge_base_search", "ask_digitalocean_agent"}
+    hybrid_tools = {
+        "suppliers_with_knowledge_base", "contracts_with_knowledge_base", "invoices_with_knowledge_base",
+        "vendor_risk_with_knowledge_base", "renewal_impact_with_knowledge_base",
+        "contract_dependency_with_knowledge_base", "top_risk_suppliers_with_knowledge_base",
+        "obligation_status_with_knowledge_base", "supplier_concentration_with_knowledge_base",
+    }
+    sources = []
+    if any(t in graph_tools or t in hybrid_tools for t in tool_calls):
+        sources.append("graph")
+    if any(t in kb_tools or t in hybrid_tools for t in tool_calls):
+        sources.append("knowledge_base")
+    return list(dict.fromkeys(sources))  # preserve order, no duplicates
+
+
 async def stream_agent_response(question: str) -> AsyncGenerator[str, None]:
     """Yield Server-Sent Events for each phase of the agent execution.
 
@@ -145,7 +171,9 @@ async def stream_agent_response(question: str) -> AsyncGenerator[str, None]:
                 raw = event.get("data", {}).get("output", {})
                 answer = raw.get("output", "") if isinstance(raw, dict) else str(raw)
                 logger.info("Agent done, tool_calls=%s", tool_calls)
-                yield _sse({"type": "done", "answer": answer, "tool_calls": tool_calls})
+                data_sources = _data_sources_from_tool_calls(tool_calls)
+                metadata = {"tool_calls": tool_calls, "data_sources": data_sources}
+                yield _sse({"type": "done", "answer": answer, "tool_calls": tool_calls, "metadata": metadata})
 
     except Exception as exc:
         logger.exception("Agent stream error")

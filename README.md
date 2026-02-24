@@ -31,12 +31,7 @@ cp .env.example .env
 pip install -r requirements.txt
 ```
 
-### 4. Seed sample data
-```bash
-python -m app.data.seed
-```
-
-### 5. Run the API
+### 4. Run the API
 ```bash
 uvicorn app.main:app --reload
 ```

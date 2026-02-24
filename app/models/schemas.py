@@ -29,6 +29,7 @@ class StreamEvent(BaseModel):
       ``answer`` contains the full response text.
       ``tool_calls`` lists the names of all tools that were invoked.
       ``conversation_id`` is the conversation id (send on next request to continue thread).
+      ``metadata`` includes tool_calls and data_sources (e.g. ["graph", "knowledge_base"]).
     * ``"error"`` – an unrecoverable error occurred; ``message`` has details.
     """
 
@@ -39,4 +40,5 @@ class StreamEvent(BaseModel):
     answer: Optional[str] = None
     tool_calls: Optional[list[str]] = None
     conversation_id: Optional[str] = None
+    metadata: Optional[dict] = None  # e.g. {"tool_calls": [...], "data_sources": ["graph", "knowledge_base"]}
 
