@@ -1,5 +1,6 @@
 from langchain_core.tools import tool
 from app.graph import queries
+from app.agent.rag import query_knowledge_base
 
 
 @tool
@@ -81,4 +82,67 @@ def top_risk_suppliers(limit: int = 5) -> str:
     return "Top risk suppliers:\n" + "\n".join(lines) if lines else "No scored suppliers found."
 
 
-TOOLS = [vendor_risk_analysis, renewal_impact_analysis, contract_dependency_lookup, top_risk_suppliers]
+@tool
+def knowledge_base_search(query: str) -> str:
+    """Search the procurement knowledge base (contracts, policies, clause libraries) using RAG.
+    Use this when the user asks about contract clauses, compliance policies, or wants
+    information grounded in actual document content rather than graph metadata."""
+    chunks = query_knowledge_base(query)
+    if not chunks:
+        return (
+            "Knowledge base search returned no results. "
+            "The knowledge base may not be configured or no relevant documents were found."
+        )
+    parts = []
+    for i, chunk in enumerate(chunks, 1):
+        score = chunk.get("score", 0)
+        source = chunk.get("source_url") or chunk.get("source", "unknown source")
+        text = chunk.get("text", "").strip()
+        parts.append(f"[{i}] (relevance={score:.2f}, source={source})\n{text}")
+    return "\n\n".join(parts)
+
+
+@tool
+def obligation_status_check(status: str = "overdue") -> str:
+    """List contract obligations filtered by status (overdue, pending, completed).
+    Use this when the user asks about missed deadlines, upcoming obligations, or compliance status."""
+    obligations = queries.get_obligations_by_status(status)
+    if not obligations:
+        return f"No {status} obligations found."
+    lines = [
+        f"- [{o.get('obligation_type')}] {o.get('description')} | "
+        f"contract: {o.get('contract_title') or o.get('contract_id')} | "
+        f"due: {o.get('due_date')} | mandatory: {o.get('is_mandatory')}"
+        for o in obligations
+    ]
+    return f"{status.capitalize()} obligations ({len(obligations)}):\n" + "\n".join(lines)
+
+
+@tool
+def supplier_concentration_analysis() -> str:
+    """Identify suppliers with multiple contracts – reveals concentration and blast-radius risk.
+    Use this when the user asks about vendor concentration, dependency risk, or 'what-if a supplier fails'."""
+    suppliers = queries.get_supplier_concentration()
+    if not suppliers:
+        return "No suppliers with multiple contracts found."
+    lines = [
+        f"{i+1}. {s.get('supplier_name')} ({s.get('country')}, {s.get('industry')}) | "
+        f"contracts={s.get('contract_count')} | "
+        f"total_value={s.get('total_value'):.0f} | "
+        f"avg_risk={s.get('avg_risk_score'):.2f}"
+        for i, s in enumerate(suppliers)
+        if s.get("total_value") is not None
+    ]
+    return "Supplier concentration risk:\n" + "\n".join(lines) if lines else "No concentration risk data."
+
+
+TOOLS = [
+    vendor_risk_analysis,
+    renewal_impact_analysis,
+    contract_dependency_lookup,
+    top_risk_suppliers,
+    knowledge_base_search,
+    obligation_status_check,
+    supplier_concentration_analysis,
+]
+

@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Literal, Optional
 from pydantic import BaseModel
-
-
-# ── Request / Response models ──────────────────────────────────────────────
 
 
 class ChatRequest(BaseModel):
@@ -12,67 +9,30 @@ class ChatRequest(BaseModel):
     tenant_id: Optional[str] = None
 
 
-class ChatResponse(BaseModel):
-    answer: str
-    sources: list[dict[str, Any]] = []
-    tool_calls: list[str] = []
+class StreamEvent(BaseModel):
+    """A single event in the SSE stream returned by ``POST /api/v1/chat/``.
 
+    The frontend should parse each ``data: <JSON>`` line from the stream.
 
-class VendorRiskRequest(BaseModel):
-    vendor: str
-    tenant_id: Optional[str] = None
+    Phase sequence (happy path)::
 
+        thinking → (tool_call → tool_result)* → generating → done
 
-class ContractDependencyRequest(BaseModel):
-    contract_id: str
-    tenant_id: Optional[str] = None
+    Possible ``type`` values:
 
+    * ``"phase"`` – backend is in a specific processing phase.
+      ``phase`` is one of ``thinking | tool_call | tool_result | generating``.
+      ``tool`` is set for ``tool_call`` / ``tool_result``.
+    * ``"done"`` – final answer is ready.
+      ``answer`` contains the full response text.
+      ``tool_calls`` lists the names of all tools that were invoked.
+    * ``"error"`` – an unrecoverable error occurred; ``message`` has details.
+    """
 
-class RenewalImpactRequest(BaseModel):
-    days_ahead: int = 90
-    tenant_id: Optional[str] = None
+    type: Literal["phase", "done", "error"]
+    phase: Optional[Literal["thinking", "tool_call", "tool_result", "generating"]] = None
+    tool: Optional[str] = None
+    message: Optional[str] = None
+    answer: Optional[str] = None
+    tool_calls: Optional[list[str]] = None
 
-
-# ── Graph node schemas ─────────────────────────────────────────────────────
-
-
-class SupplierSchema(BaseModel):
-    id: str
-    name: str
-    country: Optional[str] = None
-    industry: Optional[str] = None
-    risk_score: Optional[float] = None
-    contract_count: Optional[int] = None
-
-
-class ContractSchema(BaseModel):
-    id: str
-    title: Optional[str] = None
-    status: Optional[str] = None
-    contract_type: Optional[str] = None
-    value: Optional[float] = None
-    currency: Optional[str] = None
-    start_date: Optional[str] = None
-    end_date: Optional[str] = None
-    renewal_date: Optional[str] = None
-    auto_renewal: Optional[bool] = None
-    risk_score: Optional[float] = None
-
-
-class VendorRiskResponse(BaseModel):
-    vendor: str
-    risk_score: Optional[float] = None
-    contracts: list[ContractSchema] = []
-    obligations: list[dict[str, Any]] = []
-    summary: str = ""
-
-
-class RenewalImpactResponse(BaseModel):
-    contracts: list[ContractSchema] = []
-    total_value_at_risk: float = 0.0
-    summary: str = ""
-
-
-class GraphQueryResponse(BaseModel):
-    results: list[dict[str, Any]]
-    count: int

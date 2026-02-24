@@ -170,3 +170,53 @@ def list_contracts(tenant_id: str | None = None, limit: int = 50) -> list[dict]:
         LIMIT $limit
     """
     return neo4j_client.run_query(cypher, params)
+
+
+def get_obligations_by_status(status: str = "overdue", tenant_id: str | None = None) -> list[dict]:
+    """Return contract obligations filtered by status (e.g. overdue, pending, completed)."""
+    params: dict = {"status": status}
+    tenant_filter = "AND c.tenant_id = $tenant_id " if tenant_id else ""
+    if tenant_id:
+        params["tenant_id"] = tenant_id
+    cypher = f"""
+        MATCH (c:Contract)-[:HAS_OBLIGATION]->(o:ContractObligation)
+        WHERE toLower(o.status) = toLower($status) {tenant_filter}
+        RETURN
+            c.id          AS contract_id,
+            c.title       AS contract_title,
+            o.id          AS obligation_id,
+            o.type        AS obligation_type,
+            o.description AS description,
+            o.due_date    AS due_date,
+            o.is_mandatory AS is_mandatory,
+            o.status      AS status
+        ORDER BY o.due_date ASC
+    """
+    return neo4j_client.run_query(cypher, params)
+
+
+def get_supplier_concentration(tenant_id: str | None = None) -> list[dict]:
+    """Return suppliers with multiple contracts – concentration / blast-radius risk."""
+    params: dict = {}
+    tenant_filter = "WHERE s.tenant_id = $tenant_id " if tenant_id else ""
+    if tenant_id:
+        params["tenant_id"] = tenant_id
+    cypher = f"""
+        MATCH (s:Supplier)-[:HAS_CONTRACT]->(c:Contract)
+        {tenant_filter}
+        WITH s,
+             count(c)                    AS contract_count,
+             sum(toFloat(c.value))       AS total_value,
+             avg(toFloat(c.risk_score))  AS avg_risk_score
+        WHERE contract_count > 1
+        RETURN
+            s.id       AS supplier_id,
+            s.name     AS supplier_name,
+            s.country  AS country,
+            s.industry AS industry,
+            contract_count,
+            total_value,
+            avg_risk_score
+        ORDER BY total_value DESC
+    """
+    return neo4j_client.run_query(cypher, params)

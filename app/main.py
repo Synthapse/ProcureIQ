@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import chat, graph
+from app.routers import chat
 
 app = FastAPI(
     title="ProcureIQ API",
@@ -18,7 +18,6 @@ app.add_middleware(
 )
 
 app.include_router(chat.router, prefix="/api/v1/chat", tags=["chat"])
-app.include_router(graph.router, prefix="/api/v1/graph", tags=["graph"])
 
 
 @app.get("/health", tags=["health"])

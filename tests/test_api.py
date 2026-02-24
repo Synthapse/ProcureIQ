@@ -1,7 +1,9 @@
 """Tests for ProcureIQ API endpoints."""
 
-import pytest
+import json
 from unittest.mock import MagicMock, patch
+
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -15,95 +17,102 @@ def test_health_check():
     assert response.json() == {"status": "ok", "service": "ProcureIQ API"}
 
 
-@patch("app.routers.graph.queries.list_suppliers")
-def test_list_suppliers(mock_query):
-    mock_query.return_value = [
-        {"id": "sup-001", "name": "TechFlow Solutions", "country": "USA", "industry": "Technology", "domain": "techflow.com"}
-    ]
-    response = client.get("/api/v1/graph/suppliers")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["count"] == 1
-    assert data["results"][0]["name"] == "TechFlow Solutions"
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 
-@patch("app.routers.graph.queries.list_contracts")
-def test_list_contracts(mock_query):
-    mock_query.return_value = [
-        {"id": "ctr-001", "title": "Enterprise License", "status": "active", "value": 250000.0, "currency": "USD", "end_date": "2026-03-15", "risk_score": 7.5, "supplier_name": "TechFlow Solutions"}
-    ]
-    response = client.get("/api/v1/graph/contracts")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["count"] == 1
-    assert data["results"][0]["title"] == "Enterprise License"
+async def _mock_stream(*events: dict):
+    """Async generator that yields pre-built SSE event strings."""
+    for ev in events:
+        yield f"data: {json.dumps(ev)}\n\n"
 
 
-@patch("app.routers.graph.queries.get_vendor_risk")
-def test_vendor_risk(mock_query):
-    mock_query.return_value = {
-        "supplier_id": "sup-001",
-        "supplier_name": "TechFlow Solutions",
-        "country": "USA",
-        "industry": "Technology",
-        "contracts": [{"id": "ctr-001", "title": "Enterprise License", "status": "active", "value": 250000.0, "currency": "USD", "end_date": "2026-03-15", "risk_score": 7.5}],
-        "obligations": [],
-    }
-    response = client.post("/api/v1/graph/vendor-risk", json={"vendor": "TechFlow"})
-    assert response.status_code == 200
-    data = response.json()
-    assert data["vendor"] == "TechFlow Solutions"
-    assert len(data["contracts"]) == 1
+def _parse_sse(raw: str) -> list[dict]:
+    """Parse raw SSE text into a list of event dicts."""
+    events = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if line.startswith("data:"):
+            events.append(json.loads(line[5:].strip()))
+    return events
 
 
-@patch("app.routers.graph.queries.get_vendor_risk")
-def test_vendor_risk_not_found(mock_query):
-    mock_query.return_value = {}
-    response = client.post("/api/v1/graph/vendor-risk", json={"vendor": "Unknown Corp"})
-    assert response.status_code == 200
-    data = response.json()
-    assert "not found" in data["summary"].lower()
+# ---------------------------------------------------------------------------
+# Chat SSE endpoint
+# ---------------------------------------------------------------------------
 
 
-@patch("app.routers.graph.queries.get_contracts_expiring_soon")
-def test_renewal_impact(mock_query):
-    mock_query.return_value = [
-        {"contract_id": "ctr-001", "title": "Enterprise License", "supplier_name": "TechFlow", "status": "active", "value": 250000.0, "currency": "USD", "end_date": "2026-03-15", "risk_score": 7.5, "auto_renewal": False}
-    ]
-    response = client.post("/api/v1/graph/renewal-impact", json={"days_ahead": 180})
-    assert response.status_code == 200
-    data = response.json()
-    assert data["total_value_at_risk"] == 250000.0
+@patch("app.routers.chat.stream_agent_response")
+def test_chat_streams_done_event(mock_stream):
+    """Endpoint must stream a 'done' event containing the final answer."""
+    mock_stream.return_value = _mock_stream(
+        {"type": "phase", "phase": "thinking", "message": "Analyzing..."},
+        {"type": "phase", "phase": "tool_call", "tool": "top_risk_suppliers", "message": "Retrieving data via top_risk_suppliers..."},
+        {"type": "phase", "phase": "tool_result", "tool": "top_risk_suppliers"},
+        {"type": "phase", "phase": "generating", "message": "Generating response..."},
+        {"type": "done", "answer": "SecureNet Inc is the highest risk vendor.", "tool_calls": ["top_risk_suppliers"]},
+    )
+
+    with client.stream("POST", "/api/v1/chat/", json={"question": "Which vendor has highest risk?"}) as resp:
+        assert resp.status_code == 200
+        assert "text/event-stream" in resp.headers["content-type"]
+        raw = resp.read().decode()
+
+    events = _parse_sse(raw)
+    types = [e["type"] for e in events]
+    assert "phase" in types
+    assert "done" in types
+
+    done = next(e for e in events if e["type"] == "done")
+    assert done["answer"] == "SecureNet Inc is the highest risk vendor."
+    assert done["tool_calls"] == ["top_risk_suppliers"]
 
 
-@patch("app.routers.graph.queries.get_top_risk_suppliers")
-def test_top_risk_suppliers(mock_query):
-    mock_query.return_value = [
-        {"supplier_id": "sup-003", "supplier_name": "SecureNet Inc", "country": "USA", "industry": "Cybersecurity", "avg_risk_score": 8.9, "contract_count": 1}
-    ]
-    response = client.get("/api/v1/graph/top-risk-suppliers")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["count"] == 1
-    assert data["results"][0]["supplier_name"] == "SecureNet Inc"
+@patch("app.routers.chat.stream_agent_response")
+def test_chat_streams_phase_sequence(mock_stream):
+    """Phase events must appear in the correct order before 'done'."""
+    mock_stream.return_value = _mock_stream(
+        {"type": "phase", "phase": "thinking", "message": "Analyzing..."},
+        {"type": "phase", "phase": "generating", "message": "Generating response..."},
+        {"type": "done", "answer": "No tools needed.", "tool_calls": []},
+    )
+
+    with client.stream("POST", "/api/v1/chat/", json={"question": "Hello"}) as resp:
+        raw = resp.read().decode()
+
+    events = _parse_sse(raw)
+    phases = [e.get("phase") for e in events if e["type"] == "phase"]
+    assert phases[0] == "thinking"
+    assert "generating" in phases
 
 
-@patch("app.routers.graph.queries.get_contract_dependencies")
-def test_contract_dependencies(mock_query):
-    mock_query.return_value = {
-        "contract_id": "ctr-001",
-        "title": "Enterprise License",
-        "supplier_name": "TechFlow Solutions",
-        "status": "active",
-        "value": 250000.0,
-        "currency": "USD",
-        "end_date": "2026-03-15",
-        "risk_score": 7.5,
-        "lines": [],
-        "obligations": [],
-        "invoices": [],
-    }
-    response = client.post("/api/v1/graph/contract-dependencies", json={"contract_id": "ctr-001"})
-    assert response.status_code == 200
-    data = response.json()
-    assert data["count"] == 1
+@patch("app.routers.chat.stream_agent_response")
+def test_chat_streams_error_event(mock_stream):
+    """If the agent raises, an error event must be returned (not an HTTP 500)."""
+    mock_stream.return_value = _mock_stream(
+        {"type": "phase", "phase": "thinking", "message": "Analyzing..."},
+        {"type": "error", "message": "Neo4j connection refused"},
+    )
+
+    with client.stream("POST", "/api/v1/chat/", json={"question": "Any question"}) as resp:
+        assert resp.status_code == 200
+        raw = resp.read().decode()
+
+    events = _parse_sse(raw)
+    error_events = [e for e in events if e["type"] == "error"]
+    assert len(error_events) == 1
+    assert "Neo4j" in error_events[0]["message"]
+
+
+@patch("app.routers.chat.stream_agent_response")
+def test_chat_sse_headers(mock_stream):
+    """Response must carry correct SSE headers for browser streaming."""
+    mock_stream.return_value = _mock_stream(
+        {"type": "done", "answer": "ok", "tool_calls": []}
+    )
+
+    with client.stream("POST", "/api/v1/chat/", json={"question": "test"}) as resp:
+        assert resp.headers["content-type"].startswith("text/event-stream")
+        assert resp.headers.get("cache-control") == "no-cache"
+
