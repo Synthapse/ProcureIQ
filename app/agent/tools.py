@@ -1,5 +1,6 @@
 from langchain_core.tools import tool
 from app.config import settings
+from app.agent.context import tenant_id_var
 from app.graph import queries
 from app.agent.rag import query_knowledge_base
 from app.agent.do_agent import query_do_agent
@@ -27,7 +28,8 @@ def _graph_then_kb(graph_context: str, question: str, top_k: int = 5) -> str:
 def vendor_risk_analysis(vendor_name: str) -> str:
     """Analyse the risk profile of a supplier/vendor including their contracts and obligations.
     Use this when the user asks about a specific vendor's risk, contracts, or exposure."""
-    data = queries.get_vendor_risk(vendor_name)
+    tenant_id = tenant_id_var.get()
+    data = queries.get_vendor_risk(vendor_name, tenant_id=tenant_id)
     if not data:
         return f"No data found for vendor '{vendor_name}'."
     contracts = data.get("contracts", [])
@@ -49,7 +51,8 @@ def vendor_risk_analysis(vendor_name: str) -> str:
 def renewal_impact_analysis(days_ahead: int = 90) -> str:
     """Find contracts expiring soon and assess their renewal risk.
     Use this when the user asks about upcoming renewals or contract expiry."""
-    contracts = queries.get_contracts_expiring_soon(days_ahead)
+    tenant_id = tenant_id_var.get()
+    contracts = queries.get_contracts_expiring_soon(days_ahead, tenant_id=tenant_id)
     if not contracts:
         return f"No contracts expiring in the next {days_ahead} days."
     total_value = sum(float(c.get("value") or 0) for c in contracts)
@@ -69,7 +72,8 @@ def renewal_impact_analysis(days_ahead: int = 90) -> str:
 def contract_dependency_lookup(contract_id: str) -> str:
     """Look up a contract's full details including lines, obligations, and invoices.
     Use this when the user asks about a specific contract's dependencies or exposure."""
-    data = queries.get_contract_dependencies(contract_id)
+    tenant_id = tenant_id_var.get()
+    data = queries.get_contract_dependencies(contract_id, tenant_id=tenant_id)
     if not data:
         return f"Contract '{contract_id}' not found."
     lines = data.get("lines", [])
@@ -90,7 +94,8 @@ def contract_dependency_lookup(contract_id: str) -> str:
 def top_risk_suppliers(limit: int = 5) -> str:
     """Return the top suppliers ranked by risk score across their contracts.
     Use this when the user asks which vendors create the highest risk."""
-    suppliers = queries.get_top_risk_suppliers(limit)
+    tenant_id = tenant_id_var.get()
+    suppliers = queries.get_top_risk_suppliers(limit, tenant_id=tenant_id)
     if not suppliers:
         return "No risk data available."
     lines = [
@@ -126,7 +131,8 @@ def knowledge_base_search(query: str) -> str:
 def obligation_status_check(status: str = "overdue") -> str:
     """List contract obligations filtered by status (overdue, pending, completed).
     Use this when the user asks about missed deadlines, upcoming obligations, or compliance status."""
-    obligations = queries.get_obligations_by_status(status)
+    tenant_id = tenant_id_var.get()
+    obligations = queries.get_obligations_by_status(status, tenant_id=tenant_id)
     if not obligations:
         return f"No {status} obligations found."
     lines = [
@@ -142,7 +148,8 @@ def obligation_status_check(status: str = "overdue") -> str:
 def supplier_concentration_analysis() -> str:
     """Identify suppliers with multiple contracts – reveals concentration and blast-radius risk.
     Use this when the user asks about vendor concentration, dependency risk, or 'what-if a supplier fails'."""
-    suppliers = queries.get_supplier_concentration()
+    tenant_id = tenant_id_var.get()
+    suppliers = queries.get_supplier_concentration(tenant_id=tenant_id)
     if not suppliers:
         return "No suppliers with multiple contracts found."
     lines = [
@@ -159,7 +166,8 @@ def supplier_concentration_analysis() -> str:
 @tool
 def list_all_suppliers(tenant_id: str | None = None, limit: int = 50) -> str:
     """List all suppliers in the graph. Use when the user asks to see all vendors, suppliers, or a full supplier list."""
-    suppliers = queries.list_suppliers(tenant_id=tenant_id, limit=limit)
+    effective_tenant_id = tenant_id_var.get() or tenant_id
+    suppliers = queries.list_suppliers(tenant_id=effective_tenant_id, limit=limit)
     if not suppliers:
         return "No suppliers found."
     lines = [
@@ -172,7 +180,8 @@ def list_all_suppliers(tenant_id: str | None = None, limit: int = 50) -> str:
 @tool
 def list_all_contracts(tenant_id: str | None = None, limit: int = 50) -> str:
     """List all contracts in the graph. Use when the user asks to see all contracts or a full contract list."""
-    contracts = queries.list_contracts(tenant_id=tenant_id, limit=limit)
+    effective_tenant_id = tenant_id_var.get() or tenant_id
+    contracts = queries.list_contracts(tenant_id=effective_tenant_id, limit=limit)
     if not contracts:
         return "No contracts found."
     lines = [
@@ -186,7 +195,8 @@ def list_all_contracts(tenant_id: str | None = None, limit: int = 50) -> str:
 @tool
 def list_all_invoices(tenant_id: str | None = None, limit: int = 50) -> str:
     """List all invoices in the graph. Use when the user asks to see all invoices or a full invoice list."""
-    invoices = queries.list_invoices(tenant_id=tenant_id, limit=limit)
+    effective_tenant_id = tenant_id_var.get() or tenant_id
+    invoices = queries.list_invoices(tenant_id=effective_tenant_id, limit=limit)
     if not invoices:
         return "No invoices found."
     lines = [
@@ -201,7 +211,8 @@ def list_all_invoices(tenant_id: str | None = None, limit: int = 50) -> str:
 @tool
 def suppliers_with_knowledge_base(question: str, limit: int = 25) -> str:
     """Hybrid: get current suppliers from the graph, then answer using the knowledge base. Use when the user wants live supplier data combined with policy/clause content."""
-    suppliers = queries.list_suppliers(limit=limit)
+    effective_tenant_id = tenant_id_var.get()
+    suppliers = queries.list_suppliers(tenant_id=effective_tenant_id, limit=limit)
     if not suppliers:
         graph_text = "No suppliers found in the graph."
     else:
@@ -213,7 +224,8 @@ def suppliers_with_knowledge_base(question: str, limit: int = 25) -> str:
 @tool
 def contracts_with_knowledge_base(question: str, limit: int = 25) -> str:
     """Hybrid: get current contracts from the graph, then answer using the knowledge base. Use when the user wants contract list combined with policies, clauses, or documents."""
-    contracts = queries.list_contracts(limit=limit)
+    effective_tenant_id = tenant_id_var.get()
+    contracts = queries.list_contracts(tenant_id=effective_tenant_id, limit=limit)
     if not contracts:
         graph_text = "No contracts found in the graph."
     else:
@@ -229,7 +241,8 @@ def contracts_with_knowledge_base(question: str, limit: int = 25) -> str:
 @tool
 def invoices_with_knowledge_base(question: str, limit: int = 25) -> str:
     """Hybrid: get current invoices from the graph, then answer using the knowledge base. Use when the user wants invoice data combined with policies or document content."""
-    invoices = queries.list_invoices(limit=limit)
+    effective_tenant_id = tenant_id_var.get()
+    invoices = queries.list_invoices(tenant_id=effective_tenant_id, limit=limit)
     if not invoices:
         graph_text = "No invoices found in the graph."
     else:
@@ -245,7 +258,8 @@ def invoices_with_knowledge_base(question: str, limit: int = 25) -> str:
 @tool
 def vendor_risk_with_knowledge_base(vendor_name: str, question: str) -> str:
     """Hybrid: get vendor risk (contracts, obligations) from the graph, then answer using the knowledge base. Use when the user wants a specific vendor's risk data combined with policies or clauses."""
-    data = queries.get_vendor_risk(vendor_name)
+    tenant_id = tenant_id_var.get()
+    data = queries.get_vendor_risk(vendor_name, tenant_id=tenant_id)
     if not data:
         graph_text = f"No data found for vendor '{vendor_name}'."
     else:
@@ -268,7 +282,8 @@ def vendor_risk_with_knowledge_base(vendor_name: str, question: str) -> str:
 @tool
 def renewal_impact_with_knowledge_base(question: str, days_ahead: int = 90) -> str:
     """Hybrid: get contracts expiring soon from the graph, then answer using the knowledge base. Use when the user wants renewal/expiry data combined with policies or clauses."""
-    contracts = queries.get_contracts_expiring_soon(days_ahead)
+    tenant_id = tenant_id_var.get()
+    contracts = queries.get_contracts_expiring_soon(days_ahead, tenant_id=tenant_id)
     if not contracts:
         graph_text = f"No contracts expiring in the next {days_ahead} days."
     else:
@@ -288,7 +303,8 @@ def renewal_impact_with_knowledge_base(question: str, days_ahead: int = 90) -> s
 @tool
 def contract_dependency_with_knowledge_base(contract_id: str, question: str) -> str:
     """Hybrid: get contract dependencies (lines, obligations, invoices) from the graph, then answer using the knowledge base. Use when the user wants a specific contract's details combined with clause or policy content."""
-    data = queries.get_contract_dependencies(contract_id)
+    tenant_id = tenant_id_var.get()
+    data = queries.get_contract_dependencies(contract_id, tenant_id=tenant_id)
     if not data:
         graph_text = f"Contract '{contract_id}' not found."
     else:
@@ -310,7 +326,8 @@ def contract_dependency_with_knowledge_base(contract_id: str, question: str) -> 
 @tool
 def top_risk_suppliers_with_knowledge_base(question: str, limit: int = 10) -> str:
     """Hybrid: get top risk suppliers from the graph, then answer using the knowledge base. Use when the user wants risk-ranked vendors combined with policies or clauses."""
-    suppliers = queries.get_top_risk_suppliers(limit)
+    tenant_id = tenant_id_var.get()
+    suppliers = queries.get_top_risk_suppliers(limit, tenant_id=tenant_id)
     if not suppliers:
         graph_text = "No risk data available."
     else:
@@ -325,7 +342,8 @@ def top_risk_suppliers_with_knowledge_base(question: str, limit: int = 10) -> st
 @tool
 def obligation_status_with_knowledge_base(question: str, status: str = "overdue") -> str:
     """Hybrid: get obligations by status (overdue, pending, completed) from the graph, then answer using the knowledge base. Use when the user wants obligation/compliance data combined with policies."""
-    obligations = queries.get_obligations_by_status(status)
+    tenant_id = tenant_id_var.get()
+    obligations = queries.get_obligations_by_status(status, tenant_id=tenant_id)
     if not obligations:
         graph_text = f"No {status} obligations found."
     else:
@@ -340,7 +358,8 @@ def obligation_status_with_knowledge_base(question: str, status: str = "overdue"
 @tool
 def supplier_concentration_with_knowledge_base(question: str) -> str:
     """Hybrid: get supplier concentration (multiple contracts per vendor) from the graph, then answer using the knowledge base. Use when the user wants concentration/blast-radius data combined with policies."""
-    suppliers = queries.get_supplier_concentration()
+    tenant_id = tenant_id_var.get()
+    suppliers = queries.get_supplier_concentration(tenant_id=tenant_id)
     if not suppliers:
         graph_text = "No suppliers with multiple contracts found."
     else:

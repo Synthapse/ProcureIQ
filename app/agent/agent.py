@@ -119,7 +119,7 @@ def _data_sources_from_tool_calls(tool_calls: list[str]) -> list[str]:
     return list(dict.fromkeys(sources))  # preserve order, no duplicates
 
 
-async def stream_agent_response(question: str) -> AsyncGenerator[str, None]:
+async def stream_agent_response(question: str, tenant_id: str | None = None) -> AsyncGenerator[str, None]:
     """Yield Server-Sent Events for each phase of the agent execution.
 
     Event shapes emitted (all as ``data: <JSON>\\n\\n``):
@@ -133,6 +133,9 @@ async def stream_agent_response(question: str) -> AsyncGenerator[str, None]:
         {"type": "done",  "answer": "<text>",      "tool_calls": ["<name>", ...]}
         {"type": "error", "message": "<text>"}
     """
+    from app.agent.context import tenant_id_var
+
+    tenant_id_var.set(tenant_id)
     logger.info("LLM flow input (question): %s", question)
     agent = get_agent()
     tool_calls: list[str] = []
@@ -140,7 +143,10 @@ async def stream_agent_response(question: str) -> AsyncGenerator[str, None]:
     yield _sse({"type": "phase", "phase": "thinking", "message": "Analyzing your question..."})
 
     try:
-        async for event in agent.astream_events({"input": question}, version="v2"):
+        run_input = {"input": question}
+        if tenant_id:
+            run_input["tenant_id"] = tenant_id
+        async for event in agent.astream_events(run_input, version="v2"):
             kind = event.get("event")
 
             if kind == "on_tool_start":

@@ -71,10 +71,15 @@ def get_contracts_expiring_soon(days_ahead: int = 90, tenant_id: str | None = No
     return neo4j_client.run_query(cypher, params)
 
 
-def get_contract_dependencies(contract_id: str) -> dict:
+def get_contract_dependencies(contract_id: str, tenant_id: str | None = None) -> dict:
     """Return a contract and all its lines, obligations, and linked supplier."""
-    cypher = """
-        MATCH (c:Contract {id: $contract_id})
+    params: dict = {"contract_id": contract_id}
+    tenant_filter = "WHERE c.tenant_id = $tenant_id " if tenant_id else ""
+    if tenant_id:
+        params["tenant_id"] = tenant_id
+    cypher = f"""
+        MATCH (c:Contract {{id: $contract_id}})
+        {tenant_filter}
         OPTIONAL MATCH (s:Supplier)-[:HAS_CONTRACT]->(c)
         OPTIONAL MATCH (c)-[:HAS_LINE]->(l:ContractLine)
         OPTIONAL MATCH (c)-[:HAS_OBLIGATION]->(o:ContractObligation)
@@ -88,28 +93,28 @@ def get_contract_dependencies(contract_id: str) -> dict:
             c.end_date     AS end_date,
             c.risk_score   AS risk_score,
             s.name         AS supplier_name,
-            collect(DISTINCT {
+            collect(DISTINCT {{
                 id: l.id,
                 description: l.description,
                 unit_price: l.unit_price,
                 quantity_committed: l.quantity_committed,
                 category: l.category
-            }) AS lines,
-            collect(DISTINCT {
+            }}) AS lines,
+            collect(DISTINCT {{
                 id: o.id,
                 type: o.type,
                 description: o.description,
                 due_date: o.due_date,
                 status: o.status
-            }) AS obligations,
-            collect(DISTINCT {
+            }}) AS obligations,
+            collect(DISTINCT {{
                 id: inv.id,
                 invoice_number: inv.invoice_number,
                 total_amount: inv.total_amount,
                 status: inv.status
-            }) AS invoices
+            }}) AS invoices
     """
-    rows = neo4j_client.run_query(cypher, {"contract_id": contract_id})
+    rows = neo4j_client.run_query(cypher, params)
     return rows[0] if rows else {}
 
 

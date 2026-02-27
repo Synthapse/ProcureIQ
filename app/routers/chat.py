@@ -12,9 +12,9 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-async def _stream_with_save(user_id: str, question: str, conversation_id: str | None):
+async def _stream_with_save(user_id: str, question: str, conversation_id: str | None, tenant_id: str | None = None):
     """Stream agent response, persist the turn to Neo4j when done, and inject conversation_id into done event."""
-    async for chunk in stream_agent_response(question):
+    async for chunk in stream_agent_response(question, tenant_id=tenant_id):
         if chunk.startswith("data: "):
             try:
                 payload = json.loads(chunk[6:].strip())
@@ -70,7 +70,7 @@ async def _stream_with_save(user_id: str, question: str, conversation_id: str | 
 async def chat(request: ChatRequest) -> StreamingResponse:
     logger.info("Chat request (user_id=%s, question): %s", request.user_id, request.question)
     return StreamingResponse(
-        _stream_with_save(request.user_id, request.question, request.conversation_id),
+        _stream_with_save(request.user_id, request.question, request.conversation_id, request.tenant_id),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
